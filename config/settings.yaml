@@ -1,0 +1,58 @@
+project:
+  name: quant-gold-report
+  tagline: Automated gold research report pipeline for portfolio presentation
+
+asset:
+  primary_symbol: GC=F
+  flow_proxy_symbol: GLD
+  optional_fx_symbol: CNY=X
+  shanghai_symbol: Au99.99
+
+macro_symbols:
+  dxy: DX-Y.NYB
+  dgs10: DGS10
+  cpi: CPIAUCSL
+  dfii10: DFII10
+
+date_range:
+  start: 2016-01-01
+  end: null
+
+windows:
+  sma: [20, 50, 200]
+  ema: [20, 50]
+  momentum: [21, 63, 126]
+  vol: 21
+  vol_rank: 252
+  corr: 63
+  walk_forward_refit: 252
+  walk_forward_candidates:
+    - [20, 100]
+    - [20, 150]
+    - [20, 200]
+    - [50, 150]
+    - [50, 200]
+
+optional_features:
+  hmm: true
+  shanghai_premium: true
+  llm_fallback: true
+
+llm:
+  provider: anthropic
+  model: claude-sonnet-4-20250514
+  api_key_env: ANTHROPIC_API_KEY
+  temperature: 0.1
+  max_tokens: 900
+
+output:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  charts_dir: output/charts
+  reports_dir: output/reports
+
+report:
+  title: Gold Research Report Automation
+  author: Jerome Yuxuan Zhang
+  risk_free_rate: 0.0
+
