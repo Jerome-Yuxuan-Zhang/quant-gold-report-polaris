@@ -10,6 +10,7 @@ from src.utils import format_num, format_pct
 def build_payload(dataset: dict, trend: dict, volatility: dict, macro: dict, backtest: dict) -> dict[str, Any]:
     return {
         "dataset": dataset["summary"],
+        "dataset_metadata": dataset.get("metadata", {}),
         "trend": trend["summary"],
         "volatility": volatility["summary"],
         "macro": macro["summary"],
@@ -32,16 +33,18 @@ def fallback_sections(payload: dict[str, Any]) -> dict[str, str]:
     vol = payload["volatility"]
     macro = payload["macro"]
     backtest = payload["backtest"]
+    dataset = payload["dataset"]
+    asset_label = dataset.get("selected_symbol", "the selected asset")
 
     return {
         "executive_summary": (
-            f"Gold closed near {format_num(trend.get('latest_price'), 2)} with the dual moving-average filter "
+            f"{asset_label} closed near {format_num(trend.get('latest_price'), 2)} with the dual moving-average filter "
             f"currently reading {format_num(trend.get('latest_dual_ma_signal'), 0)}. "
-            f"The 21-day realized volatility is {format_pct(vol.get('latest_realized_vol'))}, indicating a "
+            f"The 21-day realized volatility is {format_pct(vol.get('latest_realized_vol'))}, placing the asset in a "
             f"{vol.get('latest_vol_regime', 'unclassified')} volatility regime."
         ),
         "macro_analysis": (
-            f"The latest 63-day Pearson correlation between gold and DXY is {format_num(macro.get('latest_corr_dxy'))}, "
+            f"The latest 63-day Pearson correlation between {asset_label} returns and DXY is {format_num(macro.get('latest_corr_dxy'))}, "
             f"while the correlation with real-yield changes is {format_num(macro.get('latest_corr_real_yield'))}. "
             f"The regression beta on DXY is {format_num(macro.get('dxy_beta'))} and the beta on real yields is "
             f"{format_num(macro.get('real_yield_beta'))}, with R-squared {format_num(macro.get('regression_r_squared'))}."

@@ -2,11 +2,8 @@ from __future__ import annotations
 
 import contextlib
 import io
-from pathlib import Path
-import shutil
 import warnings
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
@@ -34,7 +31,6 @@ def fit_hmm_states(returns: pd.Series) -> pd.Series:
     clean = returns.dropna()
     if len(clean) < 100:
         return pd.Series(index=returns.index, dtype="float64")
-
     try:
         from hmmlearn.hmm import GaussianHMM
     except Exception:
@@ -56,32 +52,6 @@ def fit_hmm_states(returns: pd.Series) -> pd.Series:
         return pd.Series(index=returns.index, dtype="float64")
 
 
-def plot_volatility(frame: pd.DataFrame, chart_path: str | Path) -> None:
-    plt.style.use("seaborn-v0_8-whitegrid")
-    fig, ax = plt.subplots(figsize=(12, 6))
-    ax.plot(frame.index, frame["realized_vol_21d"], label="21D Realized Vol", linewidth=1.4)
-
-    colors = {"low": "#b8e0d2", "medium": "#f7d794", "high": "#f5b7b1"}
-    regime = frame["vol_regime"].ffill()
-    start = None
-    current = None
-    for idx, label in regime.items():
-        if label != current:
-            if current is not None and start is not None:
-                ax.axvspan(start, idx, color=colors.get(current, "#eeeeee"), alpha=0.25)
-            start = idx
-            current = label
-    if current is not None and start is not None:
-        ax.axvspan(start, frame.index.max(), color=colors.get(current, "#eeeeee"), alpha=0.25)
-
-    ax.set_title("Volatility Regime Detection")
-    ax.set_ylabel("Annualized Volatility")
-    ax.legend(loc="upper left")
-    fig.tight_layout()
-    fig.savefig(chart_path, dpi=150)
-    plt.close(fig)
-
-
 def run(settings: dict, dataset: dict, run_id: str) -> dict:
     frame = dataset["data"].copy()
     vol_window = int(settings["windows"]["vol"])
@@ -92,21 +62,17 @@ def run(settings: dict, dataset: dict, run_id: str) -> dict:
     frame["vol_regime"] = frame["vol_percentile"].apply(label_regime)
     frame["hmm_state"] = fit_hmm_states(frame["asset_log_return"]) if settings["optional_features"].get("hmm", False) else np.nan
 
-    chart_path = Path(settings["output"]["charts_dir"]) / f"volatility_regime_{run_id}.png"
-    plot_volatility(frame, chart_path)
-    shutil.copyfile(chart_path, Path(settings["output"]["charts_dir"]) / "latest_volatility_regime.png")
-
-    latest_regime = None
     non_na_regime = frame["vol_regime"].dropna()
-    if not non_na_regime.empty:
-        latest_regime = non_na_regime.iloc[-1]
-
+    latest_regime = non_na_regime.iloc[-1] if not non_na_regime.empty else None
     return {
         "data": frame,
-        "artifacts": {"vol_chart": str(chart_path)},
         "summary": {
             "latest_realized_vol": safe_last(frame["realized_vol_21d"]),
             "latest_vol_regime": latest_regime,
             "latest_hmm_state": safe_last(frame["hmm_state"]),
         },
+        "artifacts": {},
+        "figures": {},
+        "metadata": {"vol_window": vol_window, "rank_window": rank_window},
     }
+

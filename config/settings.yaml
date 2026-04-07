@@ -1,18 +1,27 @@
 project:
   name: quant-gold-report
-  tagline: Automated gold research report pipeline for portfolio presentation
+  tagline: Research workflow for gold factor exposure, regime analysis, and signal review
+  research_question: Gold's time-varying sensitivity to the dollar and real yields, with trend performance compared across volatility regimes.
 
 asset:
-  primary_symbol: GC=F
-  flow_proxy_symbol: GLD
+  default_symbol: GLD
+  supported_symbols: [GLD, GC=F, Au99.99]
+  comparison_symbols: [GC=F, Au99.99]
+  tradable_benchmark_symbol: GLD
   optional_fx_symbol: CNY=X
   shanghai_symbol: Au99.99
+  roles:
+    GLD: Tradable ETF benchmark and default primary asset
+    GC=F: COMEX futures comparison
+    Au99.99: Shanghai gold comparison
 
 macro_symbols:
   dxy: DX-Y.NYB
   dgs10: DGS10
   cpi: CPIAUCSL
   dfii10: DFII10
+  cny: DEXCHUS
+  asof_mode: release_lag
 
 date_range:
   start: 2016-01-01
@@ -33,6 +42,10 @@ windows:
     - [50, 150]
     - [50, 200]
 
+backtest:
+  risk_free_rate: 0.0
+  transaction_cost_bps: 5.0
+
 optional_features:
   hmm: true
   shanghai_premium: true
@@ -45,6 +58,15 @@ llm:
   temperature: 0.1
   max_tokens: 900
 
+charts:
+  theme: plotly_white
+
+gui:
+  host: 127.0.0.1
+  port: 8050
+  default_tab: Overview
+  title: Gold Research Terminal
+
 output:
   raw_dir: data/raw
   processed_dir: data/processed
@@ -52,7 +74,7 @@ output:
   reports_dir: output/reports
 
 report:
-  title: Gold Research Report Automation
+  title: Gold Research Note
+  subtitle: Factor Exposure, Regime Behavior, and Signal Review
   author: Jerome Yuxuan Zhang
-  risk_free_rate: 0.0
 

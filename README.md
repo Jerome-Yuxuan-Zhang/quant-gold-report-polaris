@@ -1,70 +1,79 @@
 # quant-gold-report-polaris
 
-`quant-gold-report-polaris` is an automated research pipeline that transforms free gold and macroeconomic data into a standardized PDF report. The workflow combines market data ingestion, factor-based analysis, volatility regime detection, walk-forward backtesting, and a constrained narrative layer so the final output reads more like a compact investment research product than a notebook experiment.
-
-## At a Glance
-
-- Input: free market and macro data for gold, the dollar, yields, inflation, and ETF proxy flows
-- Core analysis: trend and momentum signals, volatility regime detection, rolling macro correlation, OLS factor exposure, and walk-forward backtesting
-- Output: a dated PDF research report with charts, tables, methodology notes, and a constrained narrative layer
-- Format: modular, reproducible, and designed for research review rather than model marketing
+`quant-gold-report-polaris` is an interactive research workflow for analyzing gold-linked assets through factor exposure, volatility regime detection, and walk-forward signal review. It combines reproducible data ingestion, structured quantitative analysis, a browser-based Dash terminal, and PDF report generation so the same pipeline can serve exploratory review and formal write-up.
 
 ## Research Objective
 
-The objective of this repository is to produce a repeatable gold market research report from transparent inputs and explainable methods. The pipeline is built around three principles: data should come from free and inspectable sources, analytics should be simple enough to defend economically, and outputs should disclose limitations rather than overstate predictive power.
+The project studies the time-varying sensitivity of gold-linked assets to dollar and real-yield shocks, then compares the behavior of a simple trend signal across different volatility regimes. The design goal is not to market a toy signal as alpha, but to present a compact research product built on transparent assumptions and auditable outputs.
 
-## Report Structure
+## Platform Overview
 
-- Cover page with asset, date range, and generation timestamp
-- Executive summary grounded on realized statistics
-- Market overview with price and volatility regime visuals
-- Macro factor section with rolling correlations and OLS summary
-- Quantitative signal review with equity curve and performance table
-- Risk and limitations section with explicit disclosure
-- Appendix with source and methodology references
+- Primary interface: `python app.py` launches an interactive Dash research terminal
+- Batch export: `python main.py` runs the same pipeline and produces a dated PDF report
+- Default primary asset: `GLD`
+- Comparison assets: `GC=F` and `Au99.99`
+- Core outputs: factor charts, regime charts, signal diagnostics, backtest metrics, distribution views, and a standardized research note
 
 ## Analytical Framework
 
-- Data layer: pulls gold, DXY, Treasury yield, CPI, real-yield, GLD proxy, and optional Shanghai gold data
-- Market signals: computes SMA, EMA, and multi-horizon price momentum
-- Regime analysis: estimates realized volatility, percentile-based regimes, and an optional two-state HMM
-- Factor analysis: measures rolling Pearson/Spearman correlation and OLS sensitivity to DXY and real-yield changes
-- Strategy review: runs an expanding-window walk-forward backtest on a dual moving-average signal
-- Narrative assembly: uses Anthropic when available and falls back to deterministic templates when it is not
+- Data layer: ingests free market and macroeconomic series, then aligns them on a business-day panel
+- As-of macro handling: monthly CPI is mapped into the daily panel using a release-lag convention rather than naive forward-fill from observation month
+- Trend and momentum: computes SMA, EMA, and multi-horizon price momentum
+- Regime analysis: estimates realized volatility, percentile-based regime labels, and an optional two-state HMM
+- Factor exposure: measures rolling Pearson and Spearman correlation plus OLS sensitivity to DXY and real-yield changes
+- Strategy review: runs an expanding-window walk-forward backtest with a simple transaction-cost assumption
+- Narrative layer: uses Anthropic when available and deterministic fallback text otherwise
+
+## Application Layout
+
+The Dash terminal is organized into six pages:
+
+- `Overview`
+- `Macro`
+- `Signals`
+- `Backtest`
+- `Distribution / Robustness`
+- `Methodology`
+
+The left control panel supports:
+
+- Primary asset selection
+- Date range updates
+- HMM toggle
+- Transaction cost input in basis points
+- Optional PDF generation from the same run
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-    A[config/settings.yaml] --> B[data_layer]
-    B --> C[trend_momentum]
-    B --> D[volatility_regime]
-    B --> E[macro_factor]
-    C --> F[backtest]
-    B --> G[llm_narrative]
-    C --> H[report_assembly]
-    D --> H
-    E --> H
-    F --> H
-    G --> H
-    H --> I[output/reports/latest_quant_gold_report.pdf]
+    A[config/settings.yaml] --> B[src/pipeline.py]
+    B --> C[src/data_layer.py]
+    B --> D[src/trend_momentum.py]
+    B --> E[src/volatility_regime.py]
+    B --> F[src/macro_factor.py]
+    B --> G[src/backtest.py]
+    B --> H[src/charting.py]
+    B --> I[src/llm_narrative.py]
+    H --> J[src/report_assembly.py]
+    I --> J
+    B --> K[app.py]
+    B --> L[main.py]
+    J --> M[output/reports/latest_quant_gold_report.pdf]
 ```
 
 ## Quickstart
 
 ```bash
 pip install -r requirements.txt
-python main.py
+python app.py
 ```
 
-Running `python main.py` downloads fresh data when available, falls back to cached snapshots if remote sources fail, and writes the latest PDF to `output/reports/latest_quant_gold_report.pdf`.
+For batch report generation:
 
-## Key Design Choices
-
-- The report is generated from structured module outputs rather than notebook-side manual edits
-- The LLM layer is constrained to description and supported by a no-key fallback path
-- Walk-forward evaluation is used to reduce look-ahead bias in signal review
-- Limitations are treated as part of the deliverable, not as footnotes after the fact
+```bash
+python main.py
+```
 
 ## Latest Output
 
@@ -78,31 +87,45 @@ Running `python main.py` downloads fresh data when available, falls back to cach
 config/            runtime settings
 data/raw/          immutable raw snapshots
 data/processed/    aligned parquet datasets
-docs/              math notes and explanations
+docs/              methodology and mathematical notes
 notebooks/         exploration scratchpad
-output/charts/     generated chart artifacts
-output/reports/    generated PDFs
-src/               production modules
-main.py            end-to-end entry point
+output/charts/     latest exported PNG artifacts
+output/reports/    generated PDF research notes
+src/               production pipeline modules
+app.py             Dash research terminal
+main.py            batch PDF entry point
 ```
 
 ## Sample Output
 
-The images below are generated by the pipeline after a local run of `python main.py`.
+![Research note cover](output/charts/latest_cover_preview.png)
 
-![Report cover preview](output/charts/latest_cover_preview.png)
+![Trend and comparison view](output/charts/latest_trend_momentum.png)
 
-![Trend chart](output/charts/latest_trend_momentum.png)
+## Design Choices
 
-## Honest Limitations
+- The primary research asset is configurable, but the repository defaults to `GLD` to keep the main report tied to a tradable benchmark
+- `GC=F` and `Au99.99` are treated as comparison assets, not parallel main narratives
+- If only `GLD` price is used, it is described as a tradable benchmark rather than a flow proxy
+- Distribution analysis is placed in robustness views and appendix material instead of replacing the core time-series charts
 
-- This is a single-asset, single-strategy workflow without diversification.
-- Dual moving-average crossovers are classic signals and should not be marketed as durable alpha.
-- The walk-forward process reduces look-ahead bias, but parameter selection still has data-snooping risk.
-- Transaction costs and slippage are not modeled in the baseline report.
-- The LLM layer describes structured outputs; it does not predict future gold prices.
-- Free data sources can contain revisions, outages, and symbol-specific quirks.
+## Limitations
+
+- This is a single-asset, single-signal review rather than a diversified portfolio study
+- Dual moving-average crossovers are intentionally simple and should not be framed as persistent alpha
+- The CPI as-of treatment is more disciplined than naive forward-fill, but historical revisions can still make ex-post analysis cleaner than real-time conditions
+- Transaction costs are represented by a simple basis-point model and do not include slippage, taxes, or impact
+- The narrative layer is descriptive only and does not produce forecasts
+- Free data sources can contain gaps, revisions, outages, and symbol-specific inconsistencies
 
 ## For Reviewers
 
-If you only have two minutes, start with the latest PDF report, then review `config/settings.yaml`, `src/backtest.py`, and `docs/math_notes.md`. That path shows the output, parameterization, evaluation logic, and methodological support with minimal context switching.
+If you only have two minutes, review:
+
+1. [latest_quant_gold_report.pdf](output/reports/latest_quant_gold_report.pdf)
+2. [settings.yaml](config/settings.yaml)
+3. [pipeline.py](src/pipeline.py)
+4. [math_notes.md](docs/math_notes.md)
+
+That path shows the output, configuration surface, execution flow, and methodological boundaries with minimal context switching.
+

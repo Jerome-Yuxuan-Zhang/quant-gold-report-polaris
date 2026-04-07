@@ -1,102 +1,118 @@
-# Mathematical Notes
+# Methodology and Mathematical Notes
 
-## Module 1: Data Layer
+## Research Focus
 
-Gold is primarily driven by a small set of macro channels that are easy to explain and defend in an interview. The real-yield channel comes from the Fisher-style decomposition `r_real ≈ i_nominal - pi`, so higher real yields raise the opportunity cost of holding a non-yielding asset like gold. The dollar channel matters because gold is quoted in USD; a stronger dollar mechanically makes gold more expensive for non-USD buyers and often pressures returns.
+The core question is whether a gold-linked asset's sensitivity to the dollar and real yields is stable through time, and whether a simple trend-following rule behaves differently across volatility regimes. The repository defaults to `GLD` as the primary research asset because it is directly tradable and easier to defend in a backtest than a loose “gold spot” label. `GC=F` and `Au99.99` are retained as comparison assets rather than co-equal primary narratives.
 
-Raw price levels are non-stationary because their mean and variance can drift over time. Many time-series tools behave better on transformed data, so the pipeline computes log returns
+## Data Semantics and As-of Handling
+
+The data layer aligns market and macro variables on a business-day index, but it does not treat every macro series as known every day.
+
+- Daily market series such as `GLD`, `GC=F`, DXY, and daily yield series are mapped to the business-day panel and forward-filled only across missing market dates.
+- Monthly CPI is not treated as if it were known throughout its observation month. Instead, the daily panel uses a release-lag convention so CPI becomes available only after a simulated publication date in the following month.
+- This is an improvement over naive forward-fill, but it is still an approximation. Historical revisions and exact release-time intraday effects are not modeled.
+
+That distinction matters because many “clean” student backtests accidentally leak macro information by assigning low-frequency data to dates before it would have been observable.
+
+## Price Transformations
+
+Raw prices are non-stationary because their mean and variance can drift over time. For that reason, the pipeline works with returns for most analytical modules.
+
+The daily log return is
 
 `r_t = ln(P_t / P_{t-1})`
 
-instead of working directly on prices. Log returns are convenient because they are approximately additive through time and often stabilize variance better than simple returns, which makes downstream correlation and regression work easier to interpret.
+and the simple return is
 
-The CPI series is monthly, so the project forward-fills it across business days after download. This is not a claim that inflation updates daily; it is just an alignment step so macro variables can sit on the same calendar as market prices.
+`R_t = P_t / P_{t-1} - 1`.
 
-## Module 2: Trend and Momentum
+Log returns are preferred in the factor and volatility modules because they are additive through time and often easier to work with statistically. Simple returns are retained for equity-curve and backtest interpretation.
 
-The simple moving average over a window of length `n` is
+## Trend and Momentum
 
-`SMA_t = (1/n) * sum_{i=0}^{n-1} P_{t-i}`.
+The simple moving average over window `n` is
 
-Longer windows smooth more noise because they average over more observations, which is the same intuition as a low-pass filter in signal processing. The 20/50/200-day set gives a short, medium, and long trend view without being hard to explain.
+`SMA_t = (1 / n) * sum_{i=0}^{n-1} P_{t-i}`.
 
-The exponential moving average places larger weight on recent observations:
+The exponential moving average is
 
-`EMA_t = alpha * P_t + (1 - alpha) * EMA_{t-1}`, where `alpha = 2 / (n + 1)`.
+`EMA_t = alpha * P_t + (1 - alpha) * EMA_{t-1}`, with `alpha = 2 / (n + 1)`.
 
-Compared with the SMA, the EMA reacts faster to turning points because old observations decay geometrically instead of dropping out abruptly.
-
-Price momentum is measured as
+Momentum is measured as
 
 `Mom_{t,k} = P_t / P_{t-k} - 1`
 
-for `k` equal to 21, 63, and 126 trading days. The usual explanation is behavioral underreaction: information diffuses slowly, so trends persist for a while. A second interpretation is risk-based: momentum can compensate investors for exposure to sudden reversals and crash risk.
+for 21, 63, and 126 trading days. The project uses a 20/200-day dual moving-average signal as a deliberately simple baseline, not as a claim of novel alpha discovery.
 
-## Module 3: Volatility Regime Detection
+## Volatility and Regime Detection
 
-The core realized-volatility estimate is a rolling standard deviation of daily log returns:
+Realized volatility is estimated as
 
 `sigma_t = std(r_{t-20}, ..., r_t) * sqrt(252)`.
 
-This is a standard backward-looking measure. It summarizes what has already happened, not what must happen next, so the report explicitly treats it as a descriptive regime tool rather than a forecast.
+The percentile-rank regime then asks where the current realized volatility sits within the trailing 252-day distribution. This creates low, medium, and high volatility states that are simple to communicate and directly useful for conditioning signal behavior.
 
-The percentile-rank regime uses a 252-day trailing window and asks where the latest realized volatility sits within its recent history. A high percentile means today's volatility is large relative to the past year; a low percentile means the opposite. This is simple but effective for communicating whether the market is calm, normal, or stressed.
+The optional HMM layer treats returns as generated by latent states with different emission distributions and transition probabilities. It is included as a regime-detection extension, but the repository keeps the percentile-rank regime as the primary explanatory device because it is easier to audit and defend.
 
-The HMM extension treats returns as generated by one of a small number of hidden states. Each state has its own emission distribution and the model learns a transition matrix that governs how likely it is to stay in, or switch between, regimes. That makes HMMs attractive for finance because regimes are not directly observed, yet persistence and switching are both economically plausible.
+## Macro Factor Analysis
 
-Realized volatility differs from implied volatility like VIX. Realized vol is computed from past returns; implied vol is extracted from option prices and embeds the market's forward-looking pricing of uncertainty. That distinction matters because a strategy can look calm in realized terms while option markets price elevated future risk.
-
-## Module 4: Macro Factor Analysis
-
-The 63-day rolling Pearson correlation between series `x` and `y` is
+Rolling Pearson correlation is used to measure linear co-movement:
 
 `rho_xy = cov(x, y) / (sigma_x * sigma_y)`.
 
-Pearson correlation is easy to read but assumes the relationship is roughly linear and can be distorted by outliers. Financial returns are noisy and heavy-tailed, so the report also computes rolling Spearman correlation as a robustness check.
+Rolling Spearman correlation is included as a robustness check because financial relationships are often noisy and affected by outliers.
 
-Spearman correlation replaces levels with ranks before correlating them. That makes it less sensitive to extreme observations and more informative when the relationship is monotonic but not perfectly linear.
+The OLS specification is
 
-The project estimates
+`gold_return_t = alpha + beta_1 * Delta DXY_t + beta_2 * Delta real_yield_t + epsilon_t`.
 
-`gold_return_t = alpha + beta_1 * dxy_change_t + beta_2 * real_yield_change_t + epsilon_t`
-
-using ordinary least squares. In matrix form, the coefficient estimator is
+In matrix notation:
 
 `beta_hat = (X'X)^(-1) X'y`.
 
-Economically, `beta_1` measures gold's sensitivity to dollar moves and `beta_2` measures sensitivity to changes in real yields. Multicollinearity is a real concern because the dollar and real yields often move together in macro risk-off environments, so coefficient magnitudes should be interpreted cautiously rather than as isolated structural truths.
+The interpretation is intentionally economic rather than ornamental:
 
-Rolling correlation is preferred over one full-sample estimate because gold's macro role changes across regimes. A static estimate can average together inflation scares, growth shocks, and crisis periods that behave very differently.
+- `beta_1` measures sensitivity to dollar moves
+- `beta_2` measures sensitivity to real-yield changes
+- rolling correlation is emphasized because static full-sample relationships often hide regime dependence
 
-## Module 5: Walk-Forward Backtest
+## Walk-Forward Backtest
 
-The backtest applies the dual-moving-average signal out of sample and re-selects MA windows every 252 trading days using only the expanding history available at that point. This is less optimistic than a single full-sample calibration because the model never sees future returns when choosing its next parameter pair.
+The repository uses an expanding-window walk-forward design. At each refit point, moving-average parameter pairs are selected using only information available up to that date, and the next segment is evaluated out of sample.
 
-The Sharpe ratio is computed as
+Strategy returns are computed as
 
-`SR = (E[R_p - R_f]) / sigma_p * sqrt(252)`.
+`strategy_return_t = signal_{t-1} * asset_return_t - transaction_cost_t`.
 
-It is useful because it scales returns by realized volatility, but it also has clear limitations: it assumes the volatility penalty is symmetric and works best when returns are not extremely skewed or fat-tailed.
+Transaction cost is modeled as a simple basis-point penalty on turnover:
 
-Maximum drawdown is
+`transaction_cost_t = |signal_t - signal_{t-1}| * cost_bps / 10000`.
+
+This cost model is intentionally minimal. It is not a market-impact model, but it is still more defensible than a frictionless backtest.
+
+The Sharpe ratio is
+
+`SR = sqrt(252) * E[R_p - R_f] / sigma_p`
+
+and maximum drawdown is
 
 `MDD = min_t (V_t / max_{s<=t} V_s - 1)`.
 
-This is often more intuitive than Sharpe because it answers a direct investor question: how painful was the worst peak-to-trough loss. The report also discloses hit rate, which captures consistency but says nothing about payoff asymmetry.
+## Distribution and Robustness Views
 
-The biggest methodological risk is overfitting. Every extra rule, window choice, or model variant increases degrees of freedom and raises the chance of selecting noise. That is why the report includes an explicit data-snooping limitation instead of presenting the strategy as alpha discovery.
+The core narrative uses time-series plots because the main questions are temporal: how exposures change, when regimes shift, and how the strategy behaves through time.
 
-## Module 6: LLM Narrative Layer
+Box plots are introduced as robustness views rather than headline charts. They are used for:
 
-Prompt engineering in this project is not magic; it is a constraint mechanism. By injecting realized metrics, correlations, regression coefficients, and backtest outputs directly into the prompt, the model's conditional output distribution is narrowed toward grounded description instead of free-form invention.
+- monthly strategy return distribution
+- asset returns grouped by volatility regime
+- asset returns grouped by signal state
 
-The narrative layer is asked to describe only what the numbers show. That does not eliminate hallucination risk, but it materially reduces it because the model is anchored on structured quantitative inputs rather than vague instructions.
+This keeps the main report focused on chronology while still exposing distributional behavior in a form that is easy to compare visually.
 
-The limitations section remains human-authored by design. It is the part of the report where honesty about model risk, data quality, and backtest fragility matters most, so the project does not outsource that judgment call to the LLM.
+## Narrative Layer
 
-## Module 7: Report Assembly
+The LLM layer is intentionally constrained. It receives structured module outputs rather than raw text prompts and is instructed to describe only what the numbers support. If no Anthropic key is available, the system falls back to deterministic summary text so the analytical workflow still runs end to end.
 
-The report generator converts structured artifacts into a fixed section order: cover, executive summary, market overview, macro analysis, signal review, risk disclosure, and appendix. This matters because it turns a collection of notebooks-style outputs into a repeatable research product.
-
-The PDF assembly step is intentionally simple. Tables and charts are formatted for clarity first, not for publication-grade visual polish, because the portfolio value comes from showing a reliable pipeline whose math and economic logic can be explained end to end.
+The limitations section remains explicitly human-framed. This is important because the main credibility signal of the project is not that it sounds polished, but that it draws a clear line between descriptive evidence and unsupported inference.
 

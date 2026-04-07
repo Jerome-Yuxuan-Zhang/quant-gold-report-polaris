@@ -14,7 +14,7 @@ import pandas as pd
 import requests
 import yfinance as yf
 
-from src.utils import latest_matching_file
+from src.utils import latest_matching_file, slugify_symbol
 
 
 FRED_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv"
@@ -47,6 +47,17 @@ def _normalize_history(history: pd.DataFrame, column_name: str) -> pd.DataFrame:
     return cleaned
 
 
+def _find_column(frame: pd.DataFrame, candidates: list[str], fallback_index: int | None = None) -> str:
+    normalized = {str(column).strip(): column for column in frame.columns}
+    for candidate in candidates:
+        for text, original in normalized.items():
+            if candidate.lower() == text.lower() or candidate.lower() in text.lower():
+                return original
+    if fallback_index is not None:
+        return frame.columns[fallback_index]
+    raise KeyError(f"Missing expected columns: {candidates}")
+
+
 def download_yfinance_series(symbol: str, start: str, end: str, column_name: str) -> pd.DataFrame:
     with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
         history = yf.download(symbol, start=start, end=end, progress=False, auto_adjust=False, threads=False)
@@ -54,11 +65,7 @@ def download_yfinance_series(symbol: str, start: str, end: str, column_name: str
 
 
 def download_fred_series(series_id: str, start: str, end: str, column_name: str) -> pd.DataFrame:
-    response = requests.get(
-        FRED_URL,
-        params={"id": series_id, "cosd": start, "coed": end},
-        timeout=30,
-    )
+    response = requests.get(FRED_URL, params={"id": series_id, "cosd": start, "coed": end}, timeout=30)
     response.raise_for_status()
     frame = pd.read_csv(StringIO(response.text))
     date_col = "DATE" if "DATE" in frame.columns else "observation_date"
@@ -70,11 +77,12 @@ def download_fred_series(series_id: str, start: str, end: str, column_name: str)
 
 
 def download_akshare_foreign_futures(symbol: str, start: str, end: str, column_name: str) -> pd.DataFrame:
-    mapped_symbol = symbol.replace("=F", "")
     start_ts = pd.Timestamp(start)
     end_ts = pd.Timestamp(end)
-    frame = ak.futures_foreign_hist(symbol=mapped_symbol)
-    frame = frame.rename(columns={"date": "date", "close": column_name})
+    frame = ak.futures_foreign_hist(symbol=symbol.replace("=F", ""))
+    date_col = _find_column(frame, ["date", "日期"], fallback_index=0)
+    close_col = _find_column(frame, ["close", "收盘"], fallback_index=4)
+    frame = frame.rename(columns={date_col: "date", close_col: column_name})
     frame["date"] = pd.to_datetime(frame["date"])
     frame[column_name] = pd.to_numeric(frame[column_name], errors="coerce")
     frame = frame.loc[(frame["date"] >= start_ts) & (frame["date"] <= end_ts)]
@@ -92,7 +100,9 @@ def download_akshare_us_stock(symbol: str, start: str, end: str, column_name: st
         end_date=pd.Timestamp(end).strftime("%Y%m%d"),
         adjust="",
     )
-    frame = frame.rename(columns={"日期": "date", "收盘": column_name})
+    date_col = _find_column(frame, ["date", "日期"], fallback_index=0)
+    close_col = _find_column(frame, ["close", "收盘"], fallback_index=2)
+    frame = frame.rename(columns={date_col: "date", close_col: column_name})
     frame["date"] = pd.to_datetime(frame["date"])
     frame[column_name] = pd.to_numeric(frame[column_name], errors="coerce")
     frame = frame.set_index("date")[[column_name]]
@@ -103,8 +113,10 @@ def download_akshare_us_stock(symbol: str, start: str, end: str, column_name: st
 def download_akshare_dxy(start: str, end: str, column_name: str) -> pd.DataFrame:
     start_ts = pd.Timestamp(start)
     end_ts = pd.Timestamp(end)
-    frame = ak.index_global_hist_em(symbol="\u7f8e\u5143\u6307\u6570")
-    frame = frame.rename(columns={"日期": "date", "最新价": column_name})
+    frame = ak.index_global_hist_em(symbol="美元指数")
+    date_col = _find_column(frame, ["date", "日期"], fallback_index=0)
+    close_col = _find_column(frame, ["latest", "最新"], fallback_index=4)
+    frame = frame.rename(columns={date_col: "date", close_col: column_name})
     frame["date"] = pd.to_datetime(frame["date"])
     frame[column_name] = pd.to_numeric(frame[column_name], errors="coerce")
     frame = frame.loc[(frame["date"] >= start_ts) & (frame["date"] <= end_ts)]
@@ -113,37 +125,13 @@ def download_akshare_dxy(start: str, end: str, column_name: str) -> pd.DataFrame
     return frame
 
 
-def download_market_series(symbol: str, start: str, end: str, column_name: str) -> pd.DataFrame:
-    strategies: list[Callable[[], pd.DataFrame]] = []
-
-    if symbol.endswith("=F"):
-        strategies.append(lambda: download_akshare_foreign_futures(symbol, start, end, column_name))
-    if symbol.isupper() and "=" not in symbol and "." not in symbol:
-        strategies.append(lambda: download_akshare_us_stock(symbol, start, end, column_name))
-    if symbol == "DX-Y.NYB":
-        strategies.append(lambda: download_akshare_dxy(start, end, column_name))
-    if symbol == "CNY=X":
-        strategies.append(lambda: download_fred_series("DEXCHUS", start, end, column_name))
-
-    strategies.append(lambda: download_yfinance_series(symbol, start, end, column_name))
-
-    last_error: Exception | None = None
-    for strategy in strategies:
-        try:
-            return strategy()
-        except Exception as exc:
-            last_error = exc
-    raise RuntimeError(f"Could not download market series for {symbol}") from last_error
-
-
-def download_shanghai_gold_series(symbol: str, start: str, end: str) -> pd.DataFrame:
-    import akshare as ak
+def download_shanghai_gold_series(symbol: str, start: str, end: str, column_name: str) -> pd.DataFrame:
     start_ts = pd.Timestamp(start)
     end_ts = pd.Timestamp(end)
-
     candidates: list[Callable[[], pd.DataFrame]] = [
         lambda: ak.spot_hist_sge(symbol=symbol),
         lambda: ak.spot_sge_hist(symbol=symbol),
+        lambda: ak.spot_golden_benchmark_sge(),
     ]
     last_error: Exception | None = None
 
@@ -156,19 +144,41 @@ def download_shanghai_gold_series(symbol: str, start: str, end: str) -> pd.DataF
     else:
         raise RuntimeError(f"Could not download Shanghai gold series for {symbol}") from last_error
 
-    frame = frame.copy()
-    frame.columns = [str(column).strip() for column in frame.columns]
-    date_column = next((col for col in frame.columns if "日期" in col or col.lower() == "date"), None)
-    price_column = next((col for col in frame.columns if "收盘" in col or "close" in col.lower() or "价格" in col), None)
-    if date_column is None or price_column is None:
-        raise RuntimeError("Unsupported Shanghai gold dataframe format")
-
-    frame[date_column] = pd.to_datetime(frame[date_column])
-    frame[price_column] = pd.to_numeric(frame[price_column], errors="coerce")
-    frame = frame.loc[(frame[date_column] >= start_ts) & (frame[date_column] <= end_ts)]
-    frame = frame.set_index(date_column)[[price_column]].rename(columns={price_column: "shanghai_gold_price"})
+    date_col = _find_column(frame, ["date", "日期"], fallback_index=0)
+    close_col = _find_column(frame, ["close", "收盘", "价格"], fallback_index=min(1, len(frame.columns) - 1))
+    frame = frame.rename(columns={date_col: "date", close_col: column_name})
+    frame["date"] = pd.to_datetime(frame["date"])
+    frame[column_name] = pd.to_numeric(frame[column_name], errors="coerce")
+    frame = frame.loc[(frame["date"] >= start_ts) & (frame["date"] <= end_ts)]
+    frame = frame.set_index("date")[[column_name]]
     frame.index.name = "date"
     return frame
+
+
+def download_market_series(symbol: str, start: str, end: str, column_name: str, settings: dict) -> pd.DataFrame:
+    strategies: list[Callable[[], pd.DataFrame]] = []
+
+    if symbol == settings["asset"]["shanghai_symbol"]:
+        strategies.append(lambda: download_shanghai_gold_series(symbol, start, end, column_name))
+    elif symbol.endswith("=F"):
+        strategies.append(lambda: download_akshare_foreign_futures(symbol, start, end, column_name))
+    elif symbol.isupper() and "=" not in symbol and "." not in symbol:
+        strategies.append(lambda: download_akshare_us_stock(symbol, start, end, column_name))
+    elif symbol == settings["macro_symbols"]["dxy"]:
+        strategies.append(lambda: download_akshare_dxy(start, end, column_name))
+    elif symbol == settings["asset"]["optional_fx_symbol"]:
+        strategies.append(lambda: download_fred_series(settings["macro_symbols"]["cny"], start, end, column_name))
+
+    if symbol != settings["asset"]["shanghai_symbol"]:
+        strategies.append(lambda: download_yfinance_series(symbol, start, end, column_name))
+
+    last_error: Exception | None = None
+    for strategy in strategies:
+        try:
+            return strategy()
+        except Exception as exc:
+            last_error = exc
+    raise RuntimeError(f"Could not download market series for {symbol}") from last_error
 
 
 def persist_raw_snapshot(frame: pd.DataFrame, directory: str | Path, dataset_name: str, run_id: str) -> Path:
@@ -179,11 +189,16 @@ def persist_raw_snapshot(frame: pd.DataFrame, directory: str | Path, dataset_nam
     return output_path
 
 
-def load_latest_snapshot(directory: str | Path, dataset_name: str) -> pd.DataFrame | None:
-    latest = latest_matching_file(directory, f"{dataset_name}_*.parquet")
-    if latest is None:
+def load_latest_snapshot(directory: str | Path, dataset_names: list[str]) -> pd.DataFrame | None:
+    candidates = []
+    for dataset_name in dataset_names:
+        latest = latest_matching_file(directory, f"{dataset_name}_*.parquet")
+        if latest is not None:
+            candidates.append(latest)
+    if not candidates:
         return None
-    return pd.read_parquet(latest)
+    latest_path = sorted(candidates)[-1]
+    return pd.read_parquet(latest_path)
 
 
 def fetch_with_cache(
@@ -192,65 +207,126 @@ def fetch_with_cache(
     downloader: Callable[[], pd.DataFrame],
     raw_dir: str | Path,
     run_id: str,
+    cache_aliases: list[str] | None = None,
 ) -> SeriesResult:
     try:
         frame = downloader()
         persist_raw_snapshot(frame, raw_dir, dataset_name, run_id)
         return SeriesResult(name=dataset_name, frame=frame, source="remote", status="ok")
     except Exception as exc:
-        cached = load_latest_snapshot(raw_dir, dataset_name)
+        cached = load_latest_snapshot(raw_dir, [dataset_name, *(cache_aliases or [])])
         if cached is not None:
             cached.index = pd.to_datetime(cached.index)
             return SeriesResult(dataset_name, cached, "cache", "fallback", str(exc))
         return SeriesResult(dataset_name, pd.DataFrame(), "remote", "missing", str(exc))
 
 
-def build_master_dataframe(results: dict[str, SeriesResult], settings: dict) -> pd.DataFrame:
+def _available_date(frame: pd.DataFrame, series_name: str, asof_mode: str) -> pd.Series:
+    base_index = pd.to_datetime(frame.index)
+    if asof_mode != "release_lag":
+        return base_index
+    if series_name == "cpi_index":
+        return base_index + pd.offsets.MonthEnd(1) + pd.offsets.BDay(10)
+    return base_index
+
+
+def _merge_macro_series(master: pd.DataFrame, frame: pd.DataFrame, value_columns: list[str], series_name: str, asof_mode: str) -> pd.DataFrame:
+    if frame.empty:
+        return master
+    macro = frame.copy().sort_index()
+    macro["available_date"] = _available_date(macro, series_name, asof_mode)
+    left = master.reset_index().rename(columns={"index": "date"})
+    right = macro.reset_index().rename(columns={macro.index.name or "index": "observation_date"})
+    merge_columns = ["available_date"] + value_columns
+    merged = pd.merge_asof(
+        left.sort_values("date"),
+        right[merge_columns].sort_values("available_date"),
+        left_on="date",
+        right_on="available_date",
+        direction="backward",
+    )
+    merged = merged.drop(columns=["available_date"])
+    return merged.set_index("date")
+
+
+def _prepare_cpi_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    monthly = frame.copy().sort_index()
+    monthly["cpi_yoy"] = monthly["cpi_index"].pct_change(12, fill_method=None)
+    return monthly
+
+
+def build_master_dataframe(results: dict[str, SeriesResult], settings: dict) -> tuple[pd.DataFrame, dict]:
     start = settings["date_range"]["start"]
     end = settings["date_range"]["end"] or date.today().isoformat()
-    index = pd.date_range(start=start, end=end, freq="B")
-    master = pd.DataFrame(index=index)
+    master = pd.DataFrame(index=pd.date_range(start=start, end=end, freq="B"))
     master.index.name = "date"
 
-    for result in results.values():
-        if result.frame.empty:
+    asof_mode = settings["macro_symbols"].get("asof_mode", "release_lag")
+    asset_cfg = settings["asset"]
+    selected_symbol = asset_cfg["default_symbol"]
+
+    # Primary and comparison assets
+    ordered_symbols = list(dict.fromkeys([selected_symbol, *asset_cfg["comparison_symbols"], asset_cfg["tradable_benchmark_symbol"]]))
+    for symbol in ordered_symbols:
+        key = f"symbol_{slugify_symbol(symbol)}"
+        result = results.get(key)
+        if result is None or result.frame.empty:
             continue
-        frame = result.frame.copy()
-        frame.index = pd.to_datetime(frame.index).tz_localize(None)
+        col_name = f"close_{slugify_symbol(symbol)}"
+        joined = result.frame.rename(columns={result.frame.columns[0]: col_name})
+        master = master.join(joined, how="left")
+        master[col_name] = master[col_name].ffill()
+
+    primary_col = f"close_{slugify_symbol(selected_symbol)}"
+    benchmark_col = f"close_{slugify_symbol(asset_cfg['tradable_benchmark_symbol'])}"
+    if primary_col in master.columns:
+        master["asset_close"] = master[primary_col]
+    if benchmark_col in master.columns:
+        master["tradable_benchmark_close"] = master[benchmark_col]
+
+    # Daily market series
+    for name, target in [("dxy", "dxy_close"), ("cny", "cny_close")]:
+        result = results.get(name)
+        if result and not result.frame.empty:
+            master = master.join(result.frame.rename(columns={result.frame.columns[0]: target}), how="left")
+            master[target] = master[target].ffill()
+
+    # Macro series with as-of handling
+    macro_map = {
+        "dgs10": ["dgs10"],
+        "dfii10": ["dfii10"],
+        "cpi": ["cpi_index", "cpi_yoy"],
+    }
+    if results.get("dgs10") and not results["dgs10"].frame.empty:
+        master = _merge_macro_series(master, results["dgs10"].frame, macro_map["dgs10"], "dgs10", asof_mode)
+    if results.get("dfii10") and not results["dfii10"].frame.empty:
+        master = _merge_macro_series(master, results["dfii10"].frame, macro_map["dfii10"], "dfii10", asof_mode)
+    if results.get("cpi") and not results["cpi"].frame.empty:
+        master = _merge_macro_series(master, _prepare_cpi_frame(results["cpi"].frame), macro_map["cpi"], "cpi_index", asof_mode)
+
+    if results.get("symbol_Au99_99") and not results["symbol_Au99_99"].frame.empty:
+        frame = results["symbol_Au99_99"].frame.rename(columns={results["symbol_Au99_99"].frame.columns[0]: "shanghai_gold_price"})
         master = master.join(frame, how="left")
-
-    macro_cols = [col for col in ["dgs10", "cpi_index", "dfii10"] if col in master.columns]
-    if macro_cols:
-        master[macro_cols] = master[macro_cols].ffill()
-
-    price_cols = [col for col in ["asset_close", "flow_proxy_close", "dxy_close", "cny_close", "shanghai_gold_price"] if col in master.columns]
-    if price_cols:
-        master[price_cols] = master[price_cols].ffill()
+        master["shanghai_gold_price"] = master["shanghai_gold_price"].ffill()
 
     if "asset_close" in master.columns:
         master["asset_log_return"] = np.log(master["asset_close"] / master["asset_close"].shift(1))
         master["asset_simple_return"] = master["asset_close"].pct_change()
 
-    if "flow_proxy_close" in master.columns:
-        master["flow_proxy_log_return"] = np.log(master["flow_proxy_close"] / master["flow_proxy_close"].shift(1))
+    if "tradable_benchmark_close" in master.columns:
+        master["benchmark_simple_return"] = master["tradable_benchmark_close"].pct_change()
 
     if "dxy_close" in master.columns:
         master["dxy_log_return"] = np.log(master["dxy_close"] / master["dxy_close"].shift(1))
 
-    if "cpi_index" in master.columns:
-        master["cpi_yoy"] = master["cpi_index"].pct_change(252)
-
     if "dgs10" in master.columns:
         master["nominal_yield"] = master["dgs10"] / 100.0
-
     if "dfii10" in master.columns:
         master["real_yield"] = master["dfii10"] / 100.0
     elif {"nominal_yield", "cpi_yoy"}.issubset(master.columns):
         master["real_yield"] = master["nominal_yield"] - master["cpi_yoy"]
-
     if "real_yield" in master.columns:
         master["real_yield_change"] = master["real_yield"].diff()
-
     if {"nominal_yield", "real_yield"}.issubset(master.columns):
         master["breakeven_inflation"] = master["nominal_yield"] - master["real_yield"]
 
@@ -258,25 +334,38 @@ def build_master_dataframe(results: dict[str, SeriesResult], settings: dict) -> 
         usd_gold_cny = master["asset_close"] * master["cny_close"]
         master["shanghai_gold_relative_spread"] = master["shanghai_gold_price"] / usd_gold_cny - 1
 
-    return master
+    metadata = {
+        "selected_symbol": selected_symbol,
+        "comparison_symbols": asset_cfg["comparison_symbols"],
+        "roles": asset_cfg["roles"],
+        "macro_asof_mode": asof_mode,
+        "macro_assumptions": {
+            "dgs10": "Daily FRED yield assumed available on same business day close.",
+            "dfii10": "Daily FRED real yield assumed available on same business day close.",
+            "cpi_index": "Monthly CPI mapped into daily panel using release-lag availability, not naive forward-fill from observation month.",
+        },
+    }
+    return master, metadata
 
 
-def summarize_dataset(master: pd.DataFrame, results: dict[str, SeriesResult]) -> dict:
-    coverage = {}
-    for key, result in results.items():
-        coverage[key] = {
+def summarize_dataset(master: pd.DataFrame, results: dict[str, SeriesResult], metadata: dict) -> dict:
+    coverage = {
+        key: {
             "status": result.status,
             "source": result.source,
             "rows": int(len(result.frame)),
             "note": result.note,
         }
-
+        for key, result in results.items()
+    }
     return {
         "start": master.index.min().date().isoformat() if not master.empty else None,
         "end": master.index.max().date().isoformat() if not master.empty else None,
         "observations": int(master["asset_close"].dropna().shape[0]) if "asset_close" in master.columns else 0,
         "coverage": coverage,
         "available_columns": list(master.columns),
+        "selected_symbol": metadata["selected_symbol"],
+        "asof_mode": metadata["macro_asof_mode"],
     }
 
 
@@ -289,69 +378,68 @@ def run(settings: dict, run_id: str) -> dict:
     end = settings["date_range"]["end"] or date.today().isoformat()
     asset_cfg = settings["asset"]
     macro_cfg = settings["macro_symbols"]
-    optional_cfg = settings["optional_features"]
 
-    results = {
-        "asset": fetch_with_cache(
-            dataset_name="asset",
-            downloader=lambda: download_market_series(asset_cfg["primary_symbol"], start, end, "asset_close"),
-            raw_dir=raw_dir,
-            run_id=run_id,
-        ),
-        "flow_proxy": fetch_with_cache(
-            dataset_name="flow_proxy",
-            downloader=lambda: download_market_series(asset_cfg["flow_proxy_symbol"], start, end, "flow_proxy_close"),
-            raw_dir=raw_dir,
-            run_id=run_id,
-        ),
-        "dxy": fetch_with_cache(
-            dataset_name="dxy",
-            downloader=lambda: download_market_series(macro_cfg["dxy"], start, end, "dxy_close"),
-            raw_dir=raw_dir,
-            run_id=run_id,
-        ),
-        "dgs10": fetch_with_cache(
-            dataset_name="dgs10",
-            downloader=lambda: download_fred_series(macro_cfg["dgs10"], start, end, "dgs10"),
-            raw_dir=raw_dir,
-            run_id=run_id,
-        ),
-        "cpi": fetch_with_cache(
-            dataset_name="cpi",
-            downloader=lambda: download_fred_series(macro_cfg["cpi"], start, end, "cpi_index"),
-            raw_dir=raw_dir,
-            run_id=run_id,
-        ),
-        "dfii10": fetch_with_cache(
-            dataset_name="dfii10",
-            downloader=lambda: download_fred_series(macro_cfg["dfii10"], start, end, "dfii10"),
-            raw_dir=raw_dir,
-            run_id=run_id,
-        ),
-        "cny": fetch_with_cache(
-            dataset_name="cny",
-            downloader=lambda: download_market_series(asset_cfg["optional_fx_symbol"], start, end, "cny_close"),
-            raw_dir=raw_dir,
-            run_id=run_id,
-        ),
+    symbols_to_fetch = {asset_cfg["default_symbol"], asset_cfg["tradable_benchmark_symbol"], *asset_cfg["comparison_symbols"]}
+    results: dict[str, SeriesResult] = {}
+    symbol_cache_aliases = {
+        "GLD": ["flow_proxy", "asset"],
+        "GC=F": ["asset"],
+        asset_cfg["shanghai_symbol"]: ["shanghai_gold"],
     }
 
-    if optional_cfg.get("shanghai_premium", False):
-        results["shanghai_gold"] = fetch_with_cache(
-            dataset_name="shanghai_gold",
-            downloader=lambda: download_shanghai_gold_series(asset_cfg["shanghai_symbol"], start, end),
+    for symbol in symbols_to_fetch:
+        dataset_name = f"symbol_{slugify_symbol(symbol)}"
+        column_name = f"{dataset_name}_close"
+        results[dataset_name] = fetch_with_cache(
+            dataset_name=dataset_name,
+            downloader=lambda symbol=symbol, column_name=column_name: download_market_series(symbol, start, end, column_name, settings),
             raw_dir=raw_dir,
             run_id=run_id,
+            cache_aliases=symbol_cache_aliases.get(symbol, []),
         )
 
-    master = build_master_dataframe(results, settings)
+    results["dxy"] = fetch_with_cache(
+        dataset_name="dxy",
+        downloader=lambda: download_market_series(macro_cfg["dxy"], start, end, "dxy_close", settings),
+        raw_dir=raw_dir,
+        run_id=run_id,
+    )
+    results["dgs10"] = fetch_with_cache(
+        dataset_name="dgs10",
+        downloader=lambda: download_fred_series(macro_cfg["dgs10"], start, end, "dgs10"),
+        raw_dir=raw_dir,
+        run_id=run_id,
+    )
+    results["cpi"] = fetch_with_cache(
+        dataset_name="cpi",
+        downloader=lambda: download_fred_series(macro_cfg["cpi"], start, end, "cpi_index"),
+        raw_dir=raw_dir,
+        run_id=run_id,
+    )
+    results["dfii10"] = fetch_with_cache(
+        dataset_name="dfii10",
+        downloader=lambda: download_fred_series(macro_cfg["dfii10"], start, end, "dfii10"),
+        raw_dir=raw_dir,
+        run_id=run_id,
+    )
+    results["cny"] = fetch_with_cache(
+        dataset_name="cny",
+        downloader=lambda: download_market_series(asset_cfg["optional_fx_symbol"], start, end, "cny_close", settings),
+        raw_dir=raw_dir,
+        run_id=run_id,
+    )
+
+    master, metadata = build_master_dataframe(results, settings)
     if "asset_close" not in master.columns or master["asset_close"].dropna().empty:
         raise RuntimeError("Primary asset price history is unavailable; cannot build report.")
+
     processed_path = processed_dir / f"master_dataset_{run_id}.parquet"
     master.to_parquet(processed_path)
 
     return {
         "data": master,
+        "summary": summarize_dataset(master, results, metadata),
         "artifacts": {"processed_dataset_path": str(processed_path)},
-        "summary": summarize_dataset(master, results),
+        "figures": {},
+        "metadata": metadata,
     }
